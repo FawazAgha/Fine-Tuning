@@ -1,89 +1,75 @@
-Pythia 2.8B Fine-Tuning (LoRA-ready)
+# Fine-tuning Pythia, but chill
 
-This folder contains a minimal setup to fine‑tune `EleutherAI/pythia-2.8b` on your data using Hugging Face Transformers. It supports classic LoRA and, when available on CUDA Linux, QLoRA (4‑bit) to reduce memory.
+This repo is my playground for teaching `EleutherAI/pythia-*` models new tricks with LoRA. It runs great on my M1 Pro (32 GB) and also works on Linux/CUDA boxes if you have a beefy GPU.
 
-Quick start
+## What’s here
+- `train.py` – main trainer with LoRA/QLoRA options, auto device picking, and fp32 on MPS for stability.
+- `scripts/prepare_texts.py` – vacuums up all `.txt` files and spits out a JSONL (`data/train.jsonl`).
+- `sample.py` – quick CLI to sample from either the base model or the fine-tuned adapter.
+- `compare.py` – prints base vs. fine-tuned generations side-by-side. Use `--device cpu` unless you love MPS OOMs.
+- `data/` – drop your raw `.txt` class notes under `data/text/`, or keep curated JSONL files around.
 
-- Prepare data under `data/` as JSONL with either a single `text` field per line, or a `prompt` + `response` pair per line. See `data/sample.jsonl`.
-- Install requirements and run the training script.
+## Setup (one-time)
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
 
-Environment notes
+If you plan to pull anything from the Hugging Face Hub that isn’t public, run `huggingface-cli login` first.
 
-- Linux + CUDA: Full support for LoRA and QLoRA (bitsandbytes).
-- macOS (CPU/MPS): Use standard LoRA (no bitsandbytes); QLoRA is not supported.
+## Prep your data
+1. Toss raw notes into `data/text/` (subfolders are fine).
+2. Build the training file:
+   ```bash
+   ./.venv/bin/python scripts/prepare_texts.py --input_dir data/text --output_file data/train.jsonl
+   ```
+   Each line in the JSONL ends up as a training chunk.
 
-Install
-
-1) (Recommended) Create a fresh Python 3.10+ environment.
-2) Install dependencies:
-
-   pip install -r requirements.txt
-
-3) (Optional) Login to Hugging Face if you want to push to the Hub:
-
-   huggingface-cli login
-
-Data format
-
-- Plain LM: one JSON object per line containing `text`.
-- Prompt/response: one JSON object per line containing `prompt` and `response` (they will be concatenated for causal LM).
-
-Example: see `data/sample.jsonl`.
-
-Run a small test
-
-- LoRA without 4‑bit (works on CPU/MPS/GPU):
-
-  python train.py \
+## Training cheatsheet
+- **Full 2.8B + LoRA (resume-friendly example):**
+  ```bash
+  ./.venv/bin/python train.py \
     --model_name EleutherAI/pythia-2.8b \
-    --train_file data/sample.jsonl \
+    --train_file data/train.jsonl \
     --output_dir outputs/pythia-2_8b-lora \
-    --epochs 1 --batch_size 1 --lora
+    --lora --block_size 512 --batch_size 2 --grad_accum 8 \
+    --max_steps 2000 --logging_steps 50
+  ```
 
-- QLoRA (Linux + CUDA only):
+- **Smaller + faster (pythia-1b):**
+  ```bash
+  ./.venv/bin/python train.py \
+    --model_name EleutherAI/pythia-1b \
+    --train_file data/train.jsonl \
+    --output_dir outputs/pythia-1b-lora \
+    --lora --block_size 1024 --batch_size 4 --grad_accum 2 \
+    --max_steps 2400 --logging_steps 100
+  ```
 
-  python train.py \
-    --model_name EleutherAI/pythia-2.8b \
-    --train_file data/sample.jsonl \
-    --output_dir outputs/pythia-2_8b-qlora \
-    --epochs 1 --batch_size 1 --lora --qlora
+- Resuming? Point `--resume_from_checkpoint` at the checkpoint folder and bump `--max_steps` to the new total.
 
-Common tips
+## Sampling
+Grab a response from the fine-tuned adapter:
+```bash
+./.venv/bin/python sample.py --prompt "Explain stacks vs queues" --max_new_tokens 200
+```
 
-- Set `--block_size` smaller (e.g., 512) if memory is tight.
-- Increase `--gradient_accumulation_steps` to emulate larger batch sizes.
-- Use `--gradient_checkpointing` to lower memory at some compute cost.
-- If you have evaluation data, provide `--validation_file` to enable periodic eval.
+Need the raw base model instead? Add `--use_base`. Multiple completions? `--num_return_sequences 3`.
 
-Outputs
+## Compare base vs. LoRA
+```bash
+TOKENIZERS_PARALLELISM=false ./.venv/bin/python compare.py \
+  --prompt "What’s the difference between a stack and a queue?" \
+  --device cpu \
+  --output_json comparisons.json
+```
+The script prints a side-by-side diff and drops a JSON array you can open anywhere. Stay on CPU unless you have ridiculous headroom; loading both 2.8B models onto MPS eats ~22 GB.
 
-- Model checkpoints and logs are written to `--output_dir`.
-- With LoRA/QLoRA, checkpoints contain adapter weights. You can merge them later or load adapters at inference.
+## Little tips
+- Keep `TOKENIZERS_PARALLELISM=false` around when spawning lots of workers to dodge warnings.
+- LoRA adapters are tiny, so feel free to version them in Git if you want. Merged full models are many GB—don’t even try to store those here.
+- macOS: fp32 is slower but avoids NaNs. If you do hit randomness, lower `--temperature` or drop `--top_k`.
+- Want a lighter run? Try `pythia-410m` or 1.4B with the same scripts; nothing else changes.
 
-Inference (macOS M1/M2 friendly)
-
-- Sample with your LoRA adapters:
-
-  ./.venv/bin/python scripts/inference.py \
-    --base_model EleutherAI/pythia-2.8b \
-    --adapter_dir outputs/pythia-2_8b-lora \
-    --prompt "Explain data structures to a beginner:"
-
-- Use a prompts file (one per line):
-
-  ./.venv/bin/python scripts/inference.py --adapter_dir outputs/pythia-2_8b-lora --prompts_file prompts.txt
-
-- Merge adapters into a standalone model folder (optional):
-
-  ./.venv/bin/python scripts/merge_adapters.py \
-    --base_model EleutherAI/pythia-2.8b \
-    --adapter_dir outputs/pythia-2_8b-lora \
-    --out_dir outputs/pythia-2_8b-merged
-
-  Then sample from the merged model:
-
-  ./.venv/bin/python scripts/inference.py --merged_model_dir outputs/pythia-2_8b-merged --prompt "..."
-
-
-For sampling:
-    we first load the model, then the tokenizer. Use PEFT to add LoRA adapters to base model. 
+That’s it. Drop in new text, regenerate `data/train.jsonl`, fire off `train.py`, and sample away. Feel free to tweak, break, and rerun as much as you like.
