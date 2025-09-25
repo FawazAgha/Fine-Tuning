@@ -60,3 +60,30 @@ Outputs
 - Model checkpoints and logs are written to `--output_dir`.
 - With LoRA/QLoRA, checkpoints contain adapter weights. You can merge them later or load adapters at inference.
 
+Inference (macOS M1/M2 friendly)
+
+- Sample with your LoRA adapters:
+
+  ./.venv/bin/python scripts/inference.py \
+    --base_model EleutherAI/pythia-2.8b \
+    --adapter_dir outputs/pythia-2_8b-lora \
+    --prompt "Explain data structures to a beginner:"
+
+- Use a prompts file (one per line):
+
+  ./.venv/bin/python scripts/inference.py --adapter_dir outputs/pythia-2_8b-lora --prompts_file prompts.txt
+
+- Merge adapters into a standalone model folder (optional):
+
+  ./.venv/bin/python scripts/merge_adapters.py \
+    --base_model EleutherAI/pythia-2.8b \
+    --adapter_dir outputs/pythia-2_8b-lora \
+    --out_dir outputs/pythia-2_8b-merged
+
+  Then sample from the merged model:
+
+  ./.venv/bin/python scripts/inference.py --merged_model_dir outputs/pythia-2_8b-merged --prompt "..."
+
+
+For sampling:
+    we first load the model, then the tokenizer. Use PEFT to add LoRA adapters to base model. 

@@ -1,2 +1,47 @@
-# Ignore local text data directory
-/data/text/
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+*.log
+
+# Operating system cruft
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Virtual environments / dependencies
+.venv/
+.env
+env/
+
+# IDE / editor configs
+.vscode/
+.idea/
+*.code-workspace
+
+# Model outputs & checkpoints
+outputs/
+runs/
+wandb/
+
+# Training data dumps
+data/train*.jsonl
+data/text/
+
+# Hugging Face / cache directories
+cache/
+.cache/
+hf_cache/
+.huggingface/
+
+# Misc
+*.ckpt
+*.safetensors.tmp
+*.pt
+*.bin
+*.zip
+
+data/wiki_cs_corpus_cleaned.txt

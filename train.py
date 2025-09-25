@@ -49,6 +49,7 @@ def parse_args():
     parser.add_argument("--push_to_hub", action="store_true")
     parser.add_argument("--hub_model_id", type=str, default=None)
     parser.add_argument("--resume_from_checkpoint", type=str, default=None)
+    parser.add_argument("--max_steps", type=int, default=-1, help="Override epochs with a fixed number of steps (>0)")
 
     return parser.parse_args()
 
@@ -93,12 +94,31 @@ def prepare_model_and_tokenizer(args):
     use_bnb = args.qlora and is_bitsandbytes_available()
     quant_config = get_quant_config(load_4bit=use_bnb)
 
+    # Device selection: CUDA > MPS > CPU
+    if torch.cuda.is_available():
+        device = "cuda"
+        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        device_map = "auto"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+        dtype = torch.float16
+        device_map = None  # we'll move the model after load
+    else:
+        device = "cpu"
+        dtype = None
+        device_map = None
+
+    logging.info("Selected device: %s | dtype: %s", device, str(dtype))
+
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
-        device_map="auto",
-        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else None,
+        device_map=device_map,
+        dtype=dtype,
         quantization_config=quant_config,
     )
+
+    if device in ("mps", "cpu"):
+        model.to(device)
 
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
@@ -144,8 +164,6 @@ def load_and_prepare_datasets(tokenizer, args):
         raise ValueError("Each JSONL line must have either 'text' or both 'prompt' and 'response'.")
 
     def tokenize_fn(batch: Dict[str, List[str]]):
-        texts = [build_text(ex) for ex in batch[batch.keys().__iter__().__next__()]]  # hack to iterate batch rows
-        # The above trick is to get number of rows. We'll instead rebuild properly:
         # Batch is a dict of columns; reconstruct rows first
         rows = []
         num_rows = None
@@ -158,7 +176,8 @@ def load_and_prepare_datasets(tokenizer, args):
             row = {k: v[i] for k, v in batch.items()}
             rows.append(row)
         texts = [build_text(r) for r in rows]
-        return tokenizer(texts, truncation=True, max_length=args.block_size)
+        # Do not truncate here; we'll pack sequences in group_texts
+        return tokenizer(texts, truncation=False)
 
     tokenized = raw_datasets.map(
         tokenize_fn,
@@ -200,8 +219,7 @@ def main():
     model, tokenizer, used_bnb = prepare_model_and_tokenizer(args)
     train_dataset, eval_dataset = load_and_prepare_datasets(tokenizer, args)
 
-    eval_strategy = "steps" if eval_dataset is not None else "no"
-
+    # AMP flags apply to CUDA only; MPS uses float16 via dtype above
     bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
     fp16 = torch.cuda.is_available() and not bf16
 
@@ -213,14 +231,13 @@ def main():
         per_device_eval_batch_size=max(1, args.batch_size),
         gradient_accumulation_steps=args.grad_accum,
         num_train_epochs=args.epochs,
+        max_steps=(args.max_steps if args.max_steps and args.max_steps > 0 else -1),
         learning_rate=args.lr,
         weight_decay=args.weight_decay,
         warmup_ratio=args.warmup_ratio,
         lr_scheduler_type="cosine",
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
-        evaluation_strategy=eval_strategy,
-        eval_steps=args.eval_steps if eval_strategy != "no" else None,
         save_total_limit=args.save_total_limit,
         fp16=fp16,
         bf16=bf16,
@@ -262,4 +279,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
